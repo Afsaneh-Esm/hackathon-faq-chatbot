@@ -52,9 +52,3 @@ Pandas
 
 Scikit-learn
 
-📌 Note
-
-The data inside the chatbot is currently sample data defined directly in the code (for testing).
-Later, you can replace it with a CSV file or real database once your team finalizes the dataset.
-
-Good luck with your hackathon! 🎯
