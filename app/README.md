@@ -36,8 +36,11 @@ curl -X POST http://127.0.0.1:8000/chat -H "Content-Type: application/json" -d '
 hackathon-faq-chatbot/
 ├── app
 │ └── app.py → Main backend code (FastAPI)
+
 ├── requirements.txt → Python dependencies
+
 ├── .gitignore → Files ignored by Git
+
 └── README.md → Project guide
 
 ⚙️ Dependencies
