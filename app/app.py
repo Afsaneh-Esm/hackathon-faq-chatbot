@@ -1,19 +1,39 @@
+# app/app.py
 from fastapi import FastAPI
 from pydantic import BaseModel
+from pathlib import Path
 import pandas as pd
+
+# Search / ML
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from pathlib import Path
 
-app = FastAPI(title="Hackathon FAQ Chatbot", version="0.1.0")
+# CORS (so a frontend on another origin can call the API)
+from fastapi.middleware.cors import CORSMiddleware
 
-# ============================================================
-#                LOAD REAL DATA FROM CSV FILES
-# ============================================================
+# Language detection + translation (with fallback)
+from langdetect import detect
+try:
+    from googletrans import Translator
+    _translator = Translator()
+except Exception:
+    _translator = None
+
+app = FastAPI(title="Hackathon FAQ Chatbot", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # limit to your frontend domain later if needed
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ==========================================
+#             DATA LOADING (CSV)
+# ==========================================
 DATA_DIR = Path("data")
 
-def safe_load(path):
-    """Read CSV safely and fill missing values"""
+def safe_load(path: Path) -> pd.DataFrame:
     try:
         df = pd.read_csv(path).fillna("")
         print(f"✅ Loaded {len(df)} rows from {path.name}")
@@ -22,141 +42,222 @@ def safe_load(path):
         print(f"⚠️ Could not read {path.name}: {e}")
         return pd.DataFrame()
 
-# --- JOBS DATA ---
-jobs_path = next(DATA_DIR.glob("*job*"), None)
+def col(df: pd.DataFrame, name: str) -> pd.Series:
+    """Return a string Series for a column, or empty strings if missing."""
+    if name in df.columns:
+        return df[name].astype(str)
+    return pd.Series([""] * len(df))
+
+# --- JOBS ---
+jobs_path = next((p for p in DATA_DIR.glob("*job*") if p.is_file()), None)
 if jobs_path:
     jobs = safe_load(jobs_path)
-    jobs["id"] = jobs.get("id", range(len(jobs)))
+    if "id" in jobs.columns:
+        jobs["id"] = jobs["id"].astype(str)
+    else:
+        jobs["id"] = [f"job-{i:06d}" for i in range(len(jobs))]
     jobs["category"] = "jobs"
-    jobs["title"] = jobs.get("title", "")
+    jobs["title"] = col(jobs, "title")
+    # prefer direct URL if present
+    j_direct = col(jobs, "job_url_direct")
+    j_url = col(jobs, "job_url")
+    jobs["url"] = j_direct.where(j_direct.str.len() > 0, j_url)
     jobs["body"] = (
-        "Company: " + jobs.get("company", "").astype(str)
-        + " | Industry: " + jobs.get("company_industry", "").astype(str)
-        + " | Location: " + jobs.get("location", "").astype(str)
-        + " | Type: " + jobs.get("job_type", "").astype(str)
+        "Company: " + col(jobs, "company") +
+        " | Industry: " + col(jobs, "company_industry") +
+        " | Location: " + col(jobs, "location") +
+        " | Type: " + col(jobs, "job_type")
     )
-    jobs["url"] = jobs.get("job_url_direct", jobs.get("job_url", ""))
 else:
     jobs = pd.DataFrame()
 
-# --- EVENTS DATA ---
-events_path = next(DATA_DIR.glob("*event*"), None)
+# --- EVENTS ---
+events_path = next((p for p in DATA_DIR.glob("*event*") if p.is_file()), None)
 if events_path:
     events = safe_load(events_path)
-    events["id"] = range(len(events))
+    events["id"] = [f"evt-{i:06d}" for i in range(len(events))]
     events["category"] = "events"
-    events["title"] = events.get("Title", "")
-    events["body"] = (
-        "When: " + events.get("Date & Time", "").astype(str)
-        + " | Location: " + events.get("Location", "").astype(str)
-    )
-    events["url"] = events.get("Link", "")
+    # beware of capitalization in CSV
+    title_col = "Title" if "Title" in events.columns else "title"
+    date_col = "Date & Time" if "Date & Time" in events.columns else ("date_time" if "date_time" in events.columns else "date")
+    loc_col = "Location" if "Location" in events.columns else "location"
+    link_col = "Link" if "Link" in events.columns else "link"
+    events["title"]  = col(events, title_col)
+    events["url"]    = col(events, link_col)
+    events["body"]   = "When: " + col(events, date_col) + " | Location: " + col(events, loc_col)
 else:
     events = pd.DataFrame()
 
-# --- LANGUAGE COURSES DATA ---
-lang_path = next(DATA_DIR.glob("*german*"), None)
+# --- LANGUAGE COURSES ---
+lang_path = next((p for p in DATA_DIR.glob("*german*") if p.is_file()), None)
 if lang_path:
     lang = safe_load(lang_path)
-    lang["id"] = range(len(lang))
+    lang["id"] = [f"lang-{i:06d}" for i in range(len(lang))]
     lang["category"] = "language"
-    lang["title"] = lang.get("course_name", "")
-    lang["body"] = (
-        "Provider: " + lang.get("provider", "").astype(str)
-        + " | Level: " + lang.get("german_level", "").astype(str)
-        + " | Duration: " + lang.get("duration", "").astype(str)
-        + " | Price: " + lang.get("price", "").astype(str)
-        + " | Location: " + lang.get("location", "").astype(str)
+    lang["title"] = col(lang, "course_name")
+    lang["url"]   = col(lang, "url")
+    lang["body"]  = (
+        "Provider: " + col(lang, "provider") +
+        " | Level: " + col(lang, "german_level") +
+        " | Duration: " + col(lang, "duration") +
+        " | Price: " + col(lang, "price") +
+        " | Location: " + col(lang, "location")
     )
-    lang["url"] = lang.get("url", "")
 else:
     lang = pd.DataFrame()
 
-# --- MERGE ALL ---
+# Merge all
 df = pd.concat([jobs, events, lang], ignore_index=True).fillna("")
-
-# fallback in case of no data
 if df.empty:
     df = pd.DataFrame([
-        {"id": 1, "category": "faq", "title": "What does the chatbot cover?",
-         "body": "Jobs, Events, and German language courses in Berlin.", "url": ""}
+        {"id": "sample-1", "category": "faq", "title": "What does the chatbot cover?",
+         "url": "", "body": "Jobs, tech events, and German language courses in Berlin."}
     ])
 
-# create a searchable column
-df["search_text"] = (df["title"].astype(str) + " " + df["body"].astype(str)).str.lower()
+# Build search text
+df["search_text"] = (df.get("title", "").astype(str) + " " +
+                     df.get("body", "").astype(str)).str.lower()
 
 print(f"📊 Total records loaded: {len(df)}")
 
-# ============================================================
-#                    BUILD SEARCH MODEL
-# ============================================================
+# ==========================================
+#            SEARCH MODEL (TF-IDF)
+# ==========================================
 vectorizer = TfidfVectorizer(stop_words="english")
-X = vectorizer.fit_transform(df["search_text"])
+X_full = vectorizer.fit_transform(df["search_text"])
+
+# Simple keyword-based intent
+def detect_intent(text: str) -> str | None:
+    t = text.lower()
+    if any(k in t for k in ["job", "work", "career", "developer", "engineer"]):
+        return "jobs"
+    if any(k in t for k in ["event", "meetup", "conference", "summit"]):
+        return "events"
+    if any(k in t for k in ["course", "class", "german", "sprachkurs"]):
+        return "language"
+    return None
+
+# Language fallback maps (very small, extend as needed)
+FALLBACK_MAPS = {
+    # German
+    "de": {
+        "arbeit": "job", "stelle": "job", "entwickler": "developer",
+        "veranstaltung": "event", "konferenz": "conference", "meetup": "event",
+        "kurs": "course", "deutsch": "german", "sprachkurs": "course",
+        "berlin": "berlin", "november": "november", "oktober": "october",
+        "frontend": "frontend", "daten": "data", "ki": "ai"
+    },
+    # Persian
+    "fa": {
+        "کار": "job", "شغل": "job", "فرانت": "frontend", "بک": "backend",
+        "رویداد": "event", "کنفرانس": "conference", "مییتاپ": "event",
+        "دوره": "course", "کلاس": "course", "آلمانی": "german",
+        "برلین": "berlin"
+    },
+    # Arabic
+    "ar": {
+        "وظيفة": "job", "عمل": "job", "مطور": "developer", "مبرمج": "developer",
+        "حدث": "event", "فعالية": "event", "مؤتمر": "conference", "ميتاب": "event",
+        "دورة": "course", "كورس": "course", "صف": "class", "ألمانية": "german",
+        "برلين": "berlin", "ذكاء اصطناعي": "ai", "بيانات": "data", "واجهة": "frontend", "خلفية": "backend"
+    },
+    # Turkish
+    "tr": {
+        "iş": "job", "meslek": "job", "geliştirici": "developer", "yazılımcı": "developer",
+        "etkinlik": "event", "konferans": "conference", "buluşma": "event", "meetup": "event",
+        "kurs": "course", "ders": "class", "almanca": "german",
+        "berlin": "berlin", "yapay zeka": "ai", "veri": "data", "frontend": "frontend", "backend": "backend"
+    },
+    # Hindi (Devanagari)
+    "hi": {
+        "नौकरी": "job", "जॉब": "job", "डेवलपर": "developer", "इंजीनियर": "engineer",
+        "इवेंट": "event", "कार्यक्रम": "event", "सम्मेलन": "conference", "मीटअप": "event",
+        "कोर्स": "course", "कक्षा": "class", "जर्मन": "german",
+        "बर्लिन": "berlin", "एआई": "ai", "डेटा": "data", "फ्रंटएंड": "frontend", "बैकएंड": "backend"
+    },
+    # Urdu (Arabic script)
+    "ur": {
+        "نوکری": "job", "ملازمت": "job", "ڈیویلپر": "developer", "انجینئر": "engineer",
+        "ایونٹ": "event", "تقریب": "event", "کانفرنس": "conference", "میٹ اپ": "event",
+        "کورس": "course", "کلاس": "class", "جرمن": "german",
+        "برلن": "berlin", "اے آئی": "ai", "ڈیٹا": "data", "فرنٹ اینڈ": "frontend", "بیک اینڈ": "backend"
+    },
+}
+
+def translate_to_en(text: str) -> tuple[str, str]:
+    """Return (english_text, detected_lang). Uses googletrans if available, else keyword fallback."""
+    try:
+        lang = detect(text)
+    except Exception:
+        lang = "en"
+
+    if lang == "en":
+        return text, lang
+
+    if _translator:
+        try:
+            translated = _translator.translate(text, dest="en")
+            return translated.text, lang
+        except Exception:
+            pass  # fall back below
+
+    lowered = text.lower()
+    mapping = FALLBACK_MAPS.get(lang, {})
+    for k, v in mapping.items():
+        lowered = lowered.replace(k, v)
+    return lowered, lang
 
 def search_query(query: str, top_k: int = 5):
-    # detect intent (category)
-    q_lower = query.lower()
-    category = None
-    if "job" in q_lower or "work" in q_lower or "career" in q_lower:
-        category = "jobs"
-    elif "event" in q_lower or "meetup" in q_lower or "conference" in q_lower:
-        category = "events"
-    elif "course" in q_lower or "class" in q_lower or "german" in q_lower:
-        category = "language"
-
-    # filter data by detected category
-    df_filtered = df
-    if category:
-        df_filtered = df[df["category"] == category]
-
-    # if nothing found, fallback to full data
+    # Intent detection (to narrow results)
+    category = detect_intent(query)
+    df_filtered = df if category is None else df[df["category"] == category]
     if df_filtered.empty:
         df_filtered = df
 
-    # vectorize and search
-    query_vec = vectorizer.transform([query.lower()])
-    X_filtered = vectorizer.transform(df_filtered["search_text"])
-    scores = cosine_similarity(query_vec, X_filtered)[0]
+    # Vectorize filtered set with the same vocabulary
+    qv = vectorizer.transform([query.lower()])
+    Xf = vectorizer.transform(df_filtered["search_text"])
+    scores = cosine_similarity(qv, Xf)[0]
 
-    top_indices = scores.argsort()[-top_k:][::-1]
+    # Pick top-k
+    top_idx = scores.argsort()[-top_k:][::-1]
     results = []
-    for idx in top_indices:
-        row = df_filtered.iloc[idx]
+    for i in top_idx:
+        row = df_filtered.iloc[i]
         results.append({
             "id": row.get("id", ""),
             "category": row.get("category", ""),
             "title": row.get("title", ""),
             "snippet": row.get("body", "")[:200],
             "url": row.get("url", ""),
-            "score": float(scores[idx])
+            "score": float(scores[i])
         })
 
-    if not results:
-        return {"answer": "Sorry, I couldn’t find relevant info."}
-    else:
-        cat_info = f" in {category}" if category else ""
-        return {"answer": f"Found {len(results)} results{cat_info}.", "results": results}
+    answer = f"Found {len(results)} results"
+    if category:
+        answer += f" in {category}"
+    return {"answer": answer + ".", "results": results}
 
-
-# ============================================================
-#                      API ENDPOINTS
-# ============================================================
-
+# ==========================================
+#                 API
+# ==========================================
 @app.get("/healthz")
-def health_check():
-    return {"ok": True, "records_loaded": len(df)}
+def healthz():
+    return {"ok": True, "records_loaded": int(len(df))}
 
 class ChatInput(BaseModel):
     message: str
 
 @app.post("/chat")
-def chat(query: ChatInput):
-    results = search_query(query.message)
-    if not results:
-        return {"answer": "Sorry, I couldn’t find relevant info."}
-    return {"answer": f"Found {len(results)} results.", "results": results}
+def chat(body: ChatInput):
+    # Detect & translate before search
+    msg_en, lang = translate_to_en(body.message)
+    payload = search_query(msg_en)
+    if lang != "en":
+        payload["answer"] += f" (detected: {lang} → translated)"
+    return payload
 
-# Optional root
 @app.get("/")
 def root():
-    return {"message": "Hackathon FAQ Chatbot is running. Visit /docs for the API."}
+    return {"message": "Hackathon FAQ Chatbot is running. Visit /docs"}
+
