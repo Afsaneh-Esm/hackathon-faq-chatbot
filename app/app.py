@@ -19,7 +19,7 @@ try:
 except Exception:
     _translator = None
 
-app = FastAPI(title="Hackathon FAQ Chatbot", version="1.0.0")
+app = FastAPI(title="Hackathon FAQ Chatbot", version="1.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,6 +27,61 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ==========================================
+#               MAP HELPERS
+# ==========================================
+BERLIN_BOUNDS = {
+    "lat_min": 52.2, "lat_max": 52.7,
+    "lon_min": 13.0, "lon_max": 13.8,
+}
+
+def _as_float(v):
+    try:
+        return float(v)
+    except Exception:
+        return None
+
+def _first_present(cols: list[str], df: pd.DataFrame) -> str | None:
+    for c in cols:
+        if c in df.columns:
+            return c
+    return None
+
+def _attach_latlon(df: pd.DataFrame) -> pd.DataFrame:
+    """Try to detect and standardize lat/lon columns to 'lat' and 'lon'."""
+    if df is None or df.empty:
+        return df
+    df = df.copy()
+    lat_col = _first_present(["lat","latitude","Lat","Latitude"], df)
+    lon_col = _first_present(["lon","lng","longitude","Lon","Lng","Longitude"], df)
+    if lat_col and "lat" not in df.columns:
+        df["lat"] = df[lat_col]
+    if lon_col and "lon" not in df.columns:
+        df["lon"] = df[lon_col]
+    return df
+
+def build_markers(rows: pd.DataFrame, limit: int = 20):
+    """Create map markers for rows that have valid lat/lon within Berlin bounds."""
+    markers = []
+    if rows is None or rows.empty:
+        return markers
+    for _, r in rows.head(limit).iterrows():
+        lat = _as_float(r.get("lat"))
+        lon = _as_float(r.get("lon"))
+        if lat is None or lon is None:
+            continue
+        if not (BERLIN_BOUNDS["lat_min"] <= lat <= BERLIN_BOUNDS["lat_max"] and
+                BERLIN_BOUNDS["lon_min"] <= lon <= BERLIN_BOUNDS["lon_max"]):
+            continue
+        markers.append({
+            "lat": lat,
+            "lon": lon,
+            "title": r.get("title",""),
+            "url": r.get("url",""),
+            "category": r.get("category",""),
+        })
+    return markers
 
 # ==========================================
 #             DATA LOADING (CSV)
@@ -68,6 +123,7 @@ if jobs_path:
         " | Location: " + col(jobs, "location") +
         " | Type: " + col(jobs, "job_type")
     )
+    jobs = _attach_latlon(jobs)
 else:
     jobs = pd.DataFrame()
 
@@ -85,6 +141,7 @@ if events_path:
     events["title"]  = col(events, title_col)
     events["url"]    = col(events, link_col)
     events["body"]   = "When: " + col(events, date_col) + " | Location: " + col(events, loc_col)
+    events = _attach_latlon(events)
 else:
     events = pd.DataFrame()
 
@@ -103,6 +160,7 @@ if lang_path:
         " | Price: " + col(lang, "price") +
         " | Location: " + col(lang, "location")
     )
+    lang = _attach_latlon(lang)
 else:
     lang = pd.DataFrame()
 
@@ -168,13 +226,7 @@ FALLBACK_MAPS = {
         "kurs": "course", "ders": "class", "almanca": "german",
         "berlin": "berlin", "yapay zeka": "ai", "veri": "data", "frontend": "frontend", "backend": "backend"
     },
-    # Hindi (Devanagari)
-    "hi": {
-        "नौकरी": "job", "जॉब": "job", "डेवलपर": "developer", "इंजीनियर": "engineer",
-        "इवेंट": "event", "कार्यक्रम": "event", "सम्मेलन": "conference", "मीटअप": "event",
-        "कोर्स": "course", "कक्षा": "class", "जर्मन": "german",
-        "बर्लिन": "berlin", "एआई": "ai", "डेटा": "data", "फ्रंटएंड": "frontend", "बैकएंड": "backend"
-    },
+ 
     # Urdu (Arabic script)
     "ur": {
         "نوکری": "job", "ملازمت": "job", "ڈیویلپر": "developer", "انجینئر": "engineer",
@@ -221,6 +273,8 @@ def search_query(query: str, top_k: int = 5):
 
     # Pick top-k
     top_idx = scores.argsort()[-top_k:][::-1]
+    top_rows = df_filtered.iloc[top_idx] if len(df_filtered) else df_filtered
+
     results = []
     for i in top_idx:
         row = df_filtered.iloc[i]
@@ -230,13 +284,19 @@ def search_query(query: str, top_k: int = 5):
             "title": row.get("title", ""),
             "snippet": row.get("body", "")[:200],
             "url": row.get("url", ""),
+            # expose lat/lon if present (frontend can ignore if null)
+            "lat": row.get("lat", None),
+            "lon": row.get("lon", None),
             "score": float(scores[i])
         })
+
+    # Build map markers from the same top rows
+    markers = build_markers(top_rows, limit=top_k)
 
     answer = f"Found {len(results)} results"
     if category:
         answer += f" in {category}"
-    return {"answer": answer + ".", "results": results}
+    return {"answer": answer + ".", "results": results, "markers": markers}
 
 # ==========================================
 #                 API
@@ -260,4 +320,3 @@ def chat(body: ChatInput):
 @app.get("/")
 def root():
     return {"message": "Hackathon FAQ Chatbot is running. Visit /docs"}
-
