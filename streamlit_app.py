@@ -185,7 +185,7 @@ q = st.sidebar.text_input("Ask me anything", value=q_default)
 k = st.sidebar.slider("Top K", 3, 20, 5)
 st.sidebar.markdown("---")
 st.sidebar.write("Loaded:", len((load_all())))
-# سوییچ دیباگ (اختیاری): برای مشاهدهٔ موقت مختصات
+
 show_debug = st.sidebar.checkbox("Show coordinates (debug)", value=False)
 
 df = load_all()
@@ -197,16 +197,20 @@ if q:
     results, rows = run_search(df, q_en, top_k=k)
 
 # ── Map
+# ── Map
 st.subheader("Map")
 map_df = rows.copy()
 map_df = map_df[["title","lat","lon","category","url"]].rename(columns={"lon":"lng"}).reset_index(drop=True)
 
 color_map = {
-    "jobs": [0, 170, 0],        # سبز
-    "events": [0, 120, 255],    # آبی
-    "language": [255, 140, 0],  # نارنجی
+    "jobs": [0, 170, 0],      
+    "events": [0, 120, 255],  
+    "language": [255, 140, 0],  
 }
-map_df["color"] = map_df["category"].map(color_map).fillna([200, 200, 200])
+
+
+map_df["color"] = map_df["category"].map(color_map)
+map_df["color"] = map_df["color"].apply(lambda c: c if isinstance(c, list) else [200, 200, 200])
 
 layer = pdk.Layer(
     "ScatterplotLayer",
@@ -221,7 +225,7 @@ st.pydeck_chart(
     pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip={"text": "{title}\n{category}"})
 )
 
-# ── Results (بدون نمایش مختصات)
+# ── Results
 st.subheader("Results")
 for r in results:
     st.markdown(f"**{r['title']}**  \n*{r['category']}* — [link]({r['url']})")
