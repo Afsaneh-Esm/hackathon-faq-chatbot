@@ -94,12 +94,34 @@ vectorizer = TfidfVectorizer(stop_words="english")
 X = vectorizer.fit_transform(df["search_text"])
 
 def search_query(query: str, top_k: int = 5):
+    # detect intent (category)
+    q_lower = query.lower()
+    category = None
+    if "job" in q_lower or "work" in q_lower or "career" in q_lower:
+        category = "jobs"
+    elif "event" in q_lower or "meetup" in q_lower or "conference" in q_lower:
+        category = "events"
+    elif "course" in q_lower or "class" in q_lower or "german" in q_lower:
+        category = "language"
+
+    # filter data by detected category
+    df_filtered = df
+    if category:
+        df_filtered = df[df["category"] == category]
+
+    # if nothing found, fallback to full data
+    if df_filtered.empty:
+        df_filtered = df
+
+    # vectorize and search
     query_vec = vectorizer.transform([query.lower()])
-    scores = cosine_similarity(query_vec, X)[0]
+    X_filtered = vectorizer.transform(df_filtered["search_text"])
+    scores = cosine_similarity(query_vec, X_filtered)[0]
+
     top_indices = scores.argsort()[-top_k:][::-1]
     results = []
     for idx in top_indices:
-        row = df.iloc[idx]
+        row = df_filtered.iloc[idx]
         results.append({
             "id": row.get("id", ""),
             "category": row.get("category", ""),
@@ -108,7 +130,13 @@ def search_query(query: str, top_k: int = 5):
             "url": row.get("url", ""),
             "score": float(scores[idx])
         })
-    return results
+
+    if not results:
+        return {"answer": "Sorry, I couldn’t find relevant info."}
+    else:
+        cat_info = f" in {category}" if category else ""
+        return {"answer": f"Found {len(results)} results{cat_info}.", "results": results}
+
 
 # ============================================================
 #                      API ENDPOINTS
