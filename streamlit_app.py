@@ -7,17 +7,19 @@ import pydeck as pdk
 from langdetect import detect
 from rank_bm25 import BM25Okapi
 
-st.set_page_config(page_title="Kiez Connect (Lite)", layout="wide")
+# ───────────────────────── Config ─────────────────────────
+st.set_page_config(page_title="Kiez Connect (Streamlit)", layout="wide")
 
 BERLIN_BOUNDS = {"lat_min": 52.2, "lat_max": 52.7, "lon_min": 13.0, "lon_max": 13.8}
 BERLIN_CENTER = (52.5200, 13.4050)
 
-# DATA_DIR: env → app/data → app/_data → data
+# DATA_DIR priority: env → app/data → app/_data → repo-root/data
 _here = Path(__file__).resolve().parent
-candidates = [Path(os.getenv("DATA_DIR"))] if os.getenv("DATA_DIR") else []
-candidates += [_here / "app" / "data", _here / "app" / "_data", _here / "data"]
-DATA_DIR = next((p for p in candidates if p.exists()), _here / "app" / "data")
+_candidates = [Path(os.getenv("DATA_DIR"))] if os.getenv("DATA_DIR") else []
+_candidates += [_here / "app" / "data", _here / "app" / "_data", _here / "data"]
+DATA_DIR = next((p for p in _candidates if p.exists()), _here / "app" / "data")
 
+# ───────────────────────── Helpers ─────────────────────────
 def safe_load(p: Path) -> pd.DataFrame:
     for enc in (None, "utf-8-sig", "latin-1"):
         try:
@@ -26,31 +28,42 @@ def safe_load(p: Path) -> pd.DataFrame:
             pass
     return pd.DataFrame()
 
-def col(df, name): return df[name].astype(str) if name in df.columns else pd.Series([""]*len(df))
+def col(df, name): 
+    return df[name].astype(str) if name in df.columns else pd.Series([""] * len(df))
 
 def _attach_latlon(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty: return df
+    if df is None or df.empty: 
+        return df
     df = df.copy()
     lat_candidates = ["lat","latitude","lat.","gps_lat","y","Lat","Latitude"]
     lon_candidates = ["lon","lng","longitude","long","lon.","gps_lon","x","Lon","Lng","Longitude"]
     low = {c.lower(): c for c in df.columns}
+
     def pick(cands):
         for c in cands:
-            if c.lower() in low: return low[c.lower()]
+            if c.lower() in low:
+                return low[c.lower()]
         return None
+
     lat_col, lon_col = pick(lat_candidates), pick(lon_candidates)
     if lat_col and "lat" not in df.columns: df["lat"] = df[lat_col]
     if lon_col and "lon" not in df.columns: df["lon"] = df[lon_col]
     if "lat" not in df.columns: df["lat"] = None
     if "lon" not in df.columns: df["lon"] = None
-    df["lat"] = pd.to_numeric(df["lat"].astype(str).str.replace(",", ".", regex=False), errors="coerce").fillna(BERLIN_CENTER[0])
-    df["lon"] = pd.to_numeric(df["lon"].astype(str).str.replace(",", ".", regex=False), errors="coerce").fillna(BERLIN_CENTER[1])
+
+    # numeric with comma support
+    df["lat"] = pd.to_numeric(df["lat"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+    df["lon"] = pd.to_numeric(df["lon"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+
+    # fill & clamp to Berlin
+    df["lat"] = df["lat"].fillna(BERLIN_CENTER[0])
+    df["lon"] = df["lon"].fillna(BERLIN_CENTER[1])
     lat_ok = (df["lat"] >= BERLIN_BOUNDS["lat_min"]) & (df["lat"] <= BERLIN_BOUNDS["lat_max"])
     lon_ok = (df["lon"] >= BERLIN_BOUNDS["lon_min"]) & (df["lon"] <= BERLIN_BOUNDS["lon_max"])
     df.loc[~(lat_ok & lon_ok), ["lat","lon"]] = BERLIN_CENTER
     return df
 
-def load_all():
+def load_all() -> pd.DataFrame:
     # jobs
     jp = next((p for p in DATA_DIR.glob("*job*") if p.is_file()), None)
     if jp:
@@ -100,9 +113,11 @@ def load_all():
 
     df = pd.concat([jobs, events, lang], ignore_index=True).fillna("")
     if df.empty:
-        df = pd.DataFrame([{"id":"sample-1","category":"faq","title":"What does the chatbot cover?",
-                            "url":"","body":"Jobs, tech events, and German language courses in Berlin.",
-                            "lat":BERLIN_CENTER[0],"lon":BERLIN_CENTER[1]}])
+        df = pd.DataFrame([{
+            "id": "sample-1", "category": "faq", "title": "What does the chatbot cover?",
+            "url": "", "body": "Jobs, tech events, and German language courses in Berlin.",
+            "lat": BERLIN_CENTER[0], "lon": BERLIN_CENTER[1],
+        }])
     df["search_text"] = (df.get("title","").astype(str) + " " + df.get("body","").astype(str)).str.lower()
     return df
 
@@ -134,43 +149,85 @@ def to_en(text: str):
     if lang != "en":
         lowered = text.lower()
         mapping = FALLBACK_MAPS.get(lang, {})
-        for k, v in mapping.items(): lowered = lowered.replace(k, v)
+        for k, v in mapping.items():
+            lowered = lowered.replace(k, v)
         return lowered, lang
     return text, lang
 
-# ============== UI ==============
-st.title("Kiez Connect – Streamlit (Lite)")
-df = load_all()
-bm25, tokenized = build_bm25(df["search_text"].tolist())
+def run_search(df: pd.DataFrame, q: str, top_k=5):
+    cat = detect_intent(q)
+    df_f = df if cat is None else df[df["category"] == cat]
+    if df_f.empty: df_f = df
+    bm25_f, toks_f = build_bm25(df_f["search_text"].tolist())
+    scores = bm25_f.get_scores(q.split())
+    idx = list(pd.Series(scores).nlargest(top_k).index)
+    rows = df_f.iloc[idx]
+    results = []
+    for i in idx:
+        r = df_f.iloc[i]
+        results.append({
+            "id": r.get("id",""),
+            "category": r.get("category",""),
+            "title": r.get("title",""),
+            "snippet": str(r.get("body",""))[:240],
+            "url": r.get("url",""),
+            # lat/lon را نگه می‌داریم ولی در لیست نشان نمی‌دهیم
+            "lat": float(r.get("lat", BERLIN_CENTER[0])),
+            "lon": float(r.get("lon", BERLIN_CENTER[1])),
+            "score": float(scores[i])
+        })
+    return results, rows
 
-with st.sidebar:
-    st.write("Data dir:", str(DATA_DIR))
-    q = st.text_input("Ask me anything", "events in Kreuzberg")
-    k = st.slider("Top K", 3, 20, 5)
-    st.write("Loaded:", len(df))
-    st.write("Categories:", ", ".join(sorted(df["category"].unique())))
+# ───────────────────────── UI ─────────────────────────
+st.sidebar.markdown("**Data dir:** " + str(DATA_DIR))
+q_default = "tech events"
+q = st.sidebar.text_input("Ask me anything", value=q_default)
+k = st.sidebar.slider("Top K", 3, 20, 5)
+st.sidebar.markdown("---")
+st.sidebar.write("Loaded:", len((load_all())))
+# سوییچ دیباگ (اختیاری): برای مشاهدهٔ موقت مختصات
+show_debug = st.sidebar.checkbox("Show coordinates (debug)", value=False)
+
+df = load_all()
+results = []
+rows = pd.DataFrame()
 
 if q:
     q_en, lang = to_en(q)
-    # category filter
-    cat = detect_intent(q_en)
-    df_f = df if cat is None else df[df["category"] == cat]
-    if df_f.empty: df_f = df
-    # rebuild BM25 for filtered
-    bm25_f, toks_f = build_bm25(df_f["search_text"].tolist())
-    scores = bm25_f.get_scores(q_en.split())
-    idx = list(pd.Series(scores).nlargest(k).index)
-    rows = df_f.iloc[idx]
+    results, rows = run_search(df, q_en, top_k=k)
 
-    st.subheader("Map")
-    map_df = rows[["title","lat","lon","category","url"]].rename(columns={"lon":"lng"}).copy()
-    layer = pdk.Layer("ScatterplotLayer", data=map_df, get_position='[lng, lat]', get_radius=60, pickable=True)
-    st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=pdk.ViewState(latitude=BERLIN_CENTER[0], longitude=BERLIN_CENTER[1], zoom=11), tooltip={"text":"{title}\n{category}"}))
+# ── Map
+st.subheader("Map")
+map_df = rows.copy()
+map_df = map_df[["title","lat","lon","category","url"]].rename(columns={"lon":"lng"}).reset_index(drop=True)
 
-    st.subheader("Results")
-    for _, r in rows.iterrows():
-        st.markdown(f"**{r.get('title','')}**  \n*{r.get('category','')}* — [link]({r.get('url','')})")
-        st.caption(f"lat: {float(r['lat']):.5f}, lon: {float(r['lon']):.5f}")
-        st.write(str(r.get("body",""))[:240])
-        st.markdown("---")
+color_map = {
+    "jobs": [0, 170, 0],        # سبز
+    "events": [0, 120, 255],    # آبی
+    "language": [255, 140, 0],  # نارنجی
+}
+map_df["color"] = map_df["category"].map(color_map).fillna([200, 200, 200])
+
+layer = pdk.Layer(
+    "ScatterplotLayer",
+    data=map_df,
+    get_position='[lng, lat]',
+    get_radius=60,
+    get_fill_color="color",
+    pickable=True,
+)
+view_state = pdk.ViewState(latitude=BERLIN_CENTER[0], longitude=BERLIN_CENTER[1], zoom=11)
+st.pydeck_chart(
+    pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip={"text": "{title}\n{category}"})
+)
+
+# ── Results (بدون نمایش مختصات)
+st.subheader("Results")
+for r in results:
+    st.markdown(f"**{r['title']}**  \n*{r['category']}* — [link]({r['url']})")
+    if show_debug:
+        st.caption(f"lat: {r['lat']:.5f}, lon: {r['lon']:.5f} | score: {r['score']:.3f}")
+    st.write(r["snippet"])
+    st.markdown("---")
+
 
