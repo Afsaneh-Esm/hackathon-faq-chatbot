@@ -7,5 +7,9 @@ pydantic==2.9.2
 python-multipart==0.0.9
 langdetect==1.0.9
 googletrans==4.0.0rc1
-
-
+streamlit
+pydeck
+pandas
+scikit-learn
+langdetect
+googletrans==4.0.0rc1
