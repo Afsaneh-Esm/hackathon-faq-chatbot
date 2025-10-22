@@ -3,4 +3,3 @@ pydeck==0.9.1
 pandas==2.2.2
 langdetect==1.0.9
 rank-bm25==0.2.2
-
