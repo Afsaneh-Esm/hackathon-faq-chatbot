@@ -8,3 +8,4 @@ python-multipart==0.0.9
 langdetect==1.0.9
 googletrans==4.0.0rc1
 
+
