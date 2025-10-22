@@ -2,6 +2,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from pathlib import Path
+import os
 import pandas as pd
 
 # Search / ML
@@ -19,7 +20,7 @@ try:
 except Exception:
     _translator = None
 
-app = FastAPI(title="Hackathon FAQ Chatbot", version="1.1.0")
+app = FastAPI(title="Hackathon FAQ Chatbot", version="1.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,6 +36,7 @@ BERLIN_BOUNDS = {
     "lat_min": 52.2, "lat_max": 52.7,
     "lon_min": 13.0, "lon_max": 13.8,
 }
+BERLIN_CENTER = (52.5200, 13.4050)
 
 def _as_float(v):
     try:
@@ -49,31 +51,72 @@ def _first_present(cols: list[str], df: pd.DataFrame) -> str | None:
     return None
 
 def _attach_latlon(df: pd.DataFrame) -> pd.DataFrame:
-    """Try to detect and standardize lat/lon columns to 'lat' and 'lon'."""
+    """
+    Detect many possible latitude/longitude column names, standardize to 'lat' and 'lon',
+    and coerce to floats (handling comma decimals too).
+    """
     if df is None or df.empty:
         return df
     df = df.copy()
-    lat_col = _first_present(["lat","latitude","Lat","Latitude"], df)
-    lon_col = _first_present(["lon","lng","longitude","Lon","Lng","Longitude"], df)
+
+    lat_candidates = ["lat","latitude","lat.","gps_lat","y","Lat","Latitude","LAT","LATITUDE"]
+    lon_candidates = ["lon","lng","longitude","long","lon.","gps_lon","x","Lon","Lng","Longitude","LONG","LONGITUDE"]
+
+    cols_lower = {c.lower(): c for c in df.columns}
+
+    def pick(cands):
+        for c in cands:
+            if c.lower() in cols_lower:
+                return cols_lower[c.lower()]
+        return None
+
+    lat_col = pick(lat_candidates)
+    lon_col = pick(lon_candidates)
+
     if lat_col and "lat" not in df.columns:
         df["lat"] = df[lat_col]
     if lon_col and "lon" not in df.columns:
         df["lon"] = df[lon_col]
+
+    # Ensure columns exist
+    if "lat" not in df.columns:
+        df["lat"] = None
+    if "lon" not in df.columns:
+        df["lon"] = None
+
+    # Coerce to numeric (support comma decimals)
+    df["lat"] = pd.to_numeric(df["lat"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+    df["lon"] = pd.to_numeric(df["lon"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+
     return df
 
+def _within_berlin(lat: float, lon: float) -> bool:
+    return (
+        BERLIN_BOUNDS["lat_min"] <= lat <= BERLIN_BOUNDS["lat_max"] and
+        BERLIN_BOUNDS["lon_min"] <= lon <= BERLIN_BOUNDS["lon_max"]
+    )
+
 def build_markers(rows: pd.DataFrame, limit: int = 20):
-    """Create map markers for rows that have valid lat/lon within Berlin bounds."""
+    """
+    Create map markers; if lat/lon invalid or out-of-bounds, fall back to Berlin center
+    so the frontend always receives usable markers.
+    """
     markers = []
     if rows is None or rows.empty:
         return markers
+
     for _, r in rows.head(limit).iterrows():
         lat = _as_float(r.get("lat"))
         lon = _as_float(r.get("lon"))
+
+        # Fallback if missing/invalid
         if lat is None or lon is None:
-            continue
-        if not (BERLIN_BOUNDS["lat_min"] <= lat <= BERLIN_BOUNDS["lat_max"] and
-                BERLIN_BOUNDS["lon_min"] <= lon <= BERLIN_BOUNDS["lon_max"]):
-            continue
+            lat, lon = BERLIN_CENTER
+
+        # Clamp to center if out-of-bounds
+        if not _within_berlin(lat, lon):
+            lat, lon = BERLIN_CENTER
+
         markers.append({
             "lat": lat,
             "lon": lon,
@@ -86,7 +129,16 @@ def build_markers(rows: pd.DataFrame, limit: int = 20):
 # ==========================================
 #             DATA LOADING (CSV)
 # ==========================================
-DATA_DIR = Path("data")
+
+# Resolve DATA_DIR flexibly:
+# 1) DATA_DIR env, 2) app/data, 3) app/_data, 4) repo-root/data
+_here = Path(__file__).resolve().parent
+_candidates = []
+env_dir = os.getenv("DATA_DIR")
+if env_dir:
+    _candidates.append(Path(env_dir))
+_candidates += [_here / "data", _here / "_data", _here.parent / "data"]
+DATA_DIR = next((p for p in _candidates if p.exists()), _here / "data")
 
 def safe_load(path: Path) -> pd.DataFrame:
     try:
@@ -169,8 +221,23 @@ df = pd.concat([jobs, events, lang], ignore_index=True).fillna("")
 if df.empty:
     df = pd.DataFrame([
         {"id": "sample-1", "category": "faq", "title": "What does the chatbot cover?",
-         "url": "", "body": "Jobs, tech events, and German language courses in Berlin."}
+         "url": "", "body": "Jobs, tech events, and German language courses in Berlin.",
+         "lat": BERLIN_CENTER[0], "lon": BERLIN_CENTER[1]}
     ])
+
+# --- normalize lat/lon to numeric & keep them inside Berlin bounds ---
+if "lat" in df.columns and "lon" in df.columns:
+    df["lat"] = pd.to_numeric(df["lat"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+    df["lon"] = pd.to_numeric(df["lon"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+
+    # fallback: if NaN -> center
+    df["lat"] = df["lat"].fillna(BERLIN_CENTER[0])
+    df["lon"] = df["lon"].fillna(BERLIN_CENTER[1])
+
+    # if out of bounds -> center
+    lat_ok = (df["lat"] >= BERLIN_BOUNDS["lat_min"]) & (df["lat"] <= BERLIN_BOUNDS["lat_max"])
+    lon_ok = (df["lon"] >= BERLIN_BOUNDS["lon_min"]) & (df["lon"] <= BERLIN_BOUNDS["lon_max"])
+    df.loc[~(lat_ok & lon_ok), ["lat", "lon"]] = BERLIN_CENTER
 
 # Build search text
 df["search_text"] = (df.get("title", "").astype(str) + " " +
@@ -222,11 +289,10 @@ FALLBACK_MAPS = {
     # Turkish
     "tr": {
         "iş": "job", "meslek": "job", "geliştirici": "developer", "yazılımcı": "developer",
-        "etkinlik": "event", "konferans": "conference", "buluşma": "event", "meetup": "event",
+        "etkinlik": "event", "konferанс": "conference", "buluşma": "event", "meetup": "event",
         "kurs": "course", "ders": "class", "almanca": "german",
         "berlin": "berlin", "yapay zeka": "ai", "veri": "data", "frontend": "frontend", "backend": "backend"
     },
- 
     # Urdu (Arabic script)
     "ur": {
         "نوکری": "job", "ملازمت": "job", "ڈیویلپر": "developer", "انجینئر": "engineer",
@@ -284,7 +350,7 @@ def search_query(query: str, top_k: int = 5):
             "title": row.get("title", ""),
             "snippet": row.get("body", "")[:200],
             "url": row.get("url", ""),
-            # expose lat/lon if present (frontend can ignore if null)
+            # expose lat/lon (always numeric & inside Berlin due to normalization)
             "lat": row.get("lat", None),
             "lon": row.get("lon", None),
             "score": float(scores[i])
