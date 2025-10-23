@@ -1,4 +1,4 @@
-# 🤖 Hackathon FAQ Chatbot
+#  Hackathon FAQ Chatbot
 
 A simple **multilingual chatbot** built with **FastAPI** and **Streamlit**, designed to answer questions about **tech jobs**, **events**, and **German language courses** in Berlin.
 
@@ -6,7 +6,7 @@ This is a **minimal and modular version** for hackathon development — ready to
 
 ---
 
-## 🚀 Run the project locally
+##  Run the project locally
 
 ### 1️⃣ Create a virtual environment
 bash
@@ -31,7 +31,7 @@ bash
 Copy code
 python -m uvicorn app.app:app --reload --port 8000
 After running, open this link in your browser:
-👉 http://127.0.0.1:8000/docs
+ http://127.0.0.1:8000/docs
 
 🌐 Optional: Streamlit Frontend (UI)
 You can also run the visual chatbot interface built in Streamlit with map-based results:
@@ -40,7 +40,7 @@ bash
 Copy code
 streamlit run streamlit_app.py
 This will launch the web app locally on:
-👉 http://localhost:8501
+ http://localhost:8501
 
 📁 Project structure
 pgsql
@@ -54,10 +54,11 @@ hackathon-faq-chatbot/
 
 │   ├── data/               ← CSV data files (jobs, events, language courses with lat/lon)
 
-│
 ├── streamlit_app.py        ← Streamlit frontend (UI & map)
 
 ├── requirements.txt        ← Dependencies
+
+├── requirements_api.txt        ← Dependencies
 
 ├── runtime.txt             ← Python version for Streamlit Cloud
 
@@ -84,7 +85,7 @@ PyDeck (map rendering)
 
 All dependencies are listed in requirements.txt.
 
-🧠 Key Features
+ Key Features
 Multilingual input detection (English, German, Persian, Arabic, Turkish, Urdu)
 
 Category-specific semantic search using TF-IDF
@@ -94,12 +95,6 @@ Integrated map visualization (PyDeck)
 Modular design (FastAPI backend + Streamlit frontend)
 
 Clean, easily extensible CSV-based data system
-
-🌍 Live Demo
-If deployed on Streamlit Cloud:
-👉 https://berlin-tech-bot.streamlit.app
-
-
 
  Live Demo
 If deployed on Streamlit Cloud:
