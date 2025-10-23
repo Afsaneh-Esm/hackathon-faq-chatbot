@@ -83,7 +83,7 @@ Streamlit (for UI)
 
 PyDeck (map rendering)
 
-All dependencies are listed in requirements.txt.
+All dependencies are listed in requirements.txt and requirements_api.txt
 
  Key Features
 Multilingual input detection (English, German, Persian, Arabic, Turkish, Urdu)
