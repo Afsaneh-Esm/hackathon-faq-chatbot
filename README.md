@@ -31,7 +31,8 @@ bash
 Copy code
 python -m uvicorn app.app:app --reload --port 8000
 After running, open this link in your browser:
- http://127.0.0.1:8000/docs
+After running, open this link in your browser:  
+👉 [https://spooky-spooky-cadaver-x5pww64r5rg5hqg9-8000.app.github.dev/docs](https://spooky-spooky-cadaver-x5pww64r5rg5hqg9-8000.app.github.dev/docs)
 
 🌐 Optional: Streamlit Frontend (UI)
 You can also run the visual chatbot interface built in Streamlit with map-based results:
