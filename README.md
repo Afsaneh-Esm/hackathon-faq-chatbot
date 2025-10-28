@@ -41,7 +41,7 @@ bash
 Copy code
 streamlit run streamlit_app.py
 This will launch the web app locally on:
- http://localhost:8501
+[ http://localhost:8501](https://berlin-tech-bot.streamlit.app/)
 
 📁 Project structure
 pgsql
